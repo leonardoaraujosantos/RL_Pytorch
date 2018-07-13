@@ -1,4 +1,5 @@
 import gym
+import gym.spaces
 import ptan
 import numpy as np
 from tensorboardX import SummaryWriter
@@ -9,7 +10,6 @@ import torch.optim as optim
 
 GAMMA = 0.99
 LEARNING_RATE = 0.001
-ENTROPY_BETA = 0.01
 BATCH_SIZE = 8
 
 REWARD_STEPS = 10
@@ -23,7 +23,7 @@ class PGN(nn.Module):
             nn.Linear(input_size, 128),
             nn.ReLU(),
             nn.Linear(128, n_actions),
-            nn.Softmax()
+            nn.Softmax(dim=1)
         )
 
     def forward(self, x):
@@ -36,6 +36,7 @@ if __name__ == "__main__":
 
     # Create policy Network
     net = PGN(env.observation_space.shape[0], env.action_space.n)
+    writer.add_graph(net, torch.rand(1,4))
     print(net)
 
     agent = ptan.agent.PolicyAgent(net, preprocessor=ptan.agent.float32_preprocessor,
@@ -76,7 +77,7 @@ if __name__ == "__main__":
                 print("Solved in %d steps and %d episodes!" % (step_idx, done_episodes))
                 break
 
-        # Retain episodes episodes
+        # Gather some experiences
         if len(batch_states) < BATCH_SIZE:
             continue
 
@@ -92,24 +93,16 @@ if __name__ == "__main__":
         # Get the log of probabilities
         log_prob_v = torch.log(action_probs)
         log_prob_actions_v = batch_scale_v * log_prob_v[range(BATCH_SIZE), batch_actions_t]
-        loss_policy_v = -log_prob_actions_v.mean()
-
-        entropy_v = -(action_probs * log_prob_v).sum(dim=1).mean()
-        entropy_loss_v = -ENTROPY_BETA * entropy_v
-
-        # Define loss
-        loss_v = loss_policy_v + entropy_loss_v
+        loss_v = -log_prob_actions_v.mean()
 
         loss_v.backward()
         optimizer.step()
 
         writer.add_scalar("baseline", baseline, step_idx)
-        writer.add_scalar("entropy", entropy_v.item(), step_idx)
         writer.add_scalar("batch_scales", np.mean(batch_scales), step_idx)
-        writer.add_scalar("loss_entropy", entropy_loss_v.item(), step_idx)
-        writer.add_scalar("loss_policy", loss_policy_v.item(), step_idx)
-        writer.add_scalar("loss_total", loss_v.item(), step_idx)
+        writer.add_scalar("loss", loss_v.item(), step_idx)
 
+        # Clear list of experiences
         batch_states.clear()
         batch_actions.clear()
         batch_scales.clear()
