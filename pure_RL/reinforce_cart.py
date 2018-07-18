@@ -11,7 +11,7 @@ import torch.optim as optim
 GAMMA = 0.99
 LEARNING_RATE = 0.001
 BATCH_SIZE = 8
-
+ENTROPY_BETA = 0.01
 REWARD_STEPS = 10
 
 
@@ -39,8 +39,11 @@ if __name__ == "__main__":
     writer.add_graph(net, torch.rand(1,4))
     print(net)
 
+    # Do the sample action selection (TODO: Remove this, better to be clear on the code)
     agent = ptan.agent.PolicyAgent(net, preprocessor=ptan.agent.float32_preprocessor,
                                    apply_softmax=False)
+
+    # Handle the experiences (TODO: Remove this, better to be clear on the code)
     exp_source = ptan.experience.ExperienceSourceFirstLast(env, agent, gamma=GAMMA, steps_count=REWARD_STEPS)
 
     optimizer = optim.Adam(net.parameters(), lr=LEARNING_RATE)
@@ -51,10 +54,12 @@ if __name__ == "__main__":
     done_episodes = 0
     reward_sum = 0.0
 
+    # Create empty lists for states,actions,scale
     batch_states, batch_actions, batch_scales = [], [], []
 
     for step_idx, exp in enumerate(exp_source):
         reward_sum += exp.reward
+        # Baseline is just the reward average
         baseline = reward_sum / (step_idx + 1)
         writer.add_scalar("baseline", baseline, step_idx)
         batch_states.append(exp.state)
@@ -77,14 +82,16 @@ if __name__ == "__main__":
                 print("Solved in %d steps and %d episodes!" % (step_idx, done_episodes))
                 break
 
-        # Gather some experiences
+        # Gather some experiences, then optimize when we acquire enough
         if len(batch_states) < BATCH_SIZE:
             continue
 
+        # Convert all to tensors
         states_v = torch.FloatTensor(batch_states)
         batch_actions_t = torch.LongTensor(batch_actions)
         batch_scale_v = torch.FloatTensor(batch_scales)
 
+        # Zero the grads before forward propagation and backward propagation
         optimizer.zero_grad()
 
         # Execute the policy and get the probabilities
@@ -93,8 +100,17 @@ if __name__ == "__main__":
         # Get the log of probabilities
         log_prob_v = torch.log(action_probs)
         log_prob_actions_v = batch_scale_v * log_prob_v[range(BATCH_SIZE), batch_actions_t]
-        loss_v = -log_prob_actions_v.mean()
+        loss_policy_v = -log_prob_actions_v.mean()
 
+        # Get the bonus entropy and decrement from the loss to increase exploration
+        # Adding this to the loss will force the agent to be less certain about actions
+        entropy_v = -(action_probs * log_prob_v).sum(dim=1).mean()
+        entropy_loss_v = -ENTROPY_BETA * entropy_v
+
+        # Policy loss
+        loss_v = loss_policy_v + entropy_loss_v
+
+        # Backward propagation and optimization step
         loss_v.backward()
         optimizer.step()
 
